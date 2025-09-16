@@ -1,13 +1,13 @@
-// Import necessary classes from the discord.js library
+// Import necessary libraries
 const {
     Client,
     GatewayIntentBits,
     ButtonBuilder,
     ButtonStyle,
     ActionRowBuilder,
-    SlashCommandBuilder,
-    ApplicationCommandPermissionType
+    SlashCommandBuilder
 } = require('discord.js');
+const express = require('express');
 
 // Create a new Discord client with necessary intents
 const client = new Client({
@@ -18,7 +18,19 @@ const client = new Client({
     ]
 });
 
-// Use the bot token and other sensitive information from Replit's secrets
+// Set up the web server for Render's health check
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('Bot is running!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Web server listening on port ${PORT}`);
+});
+
+// Use the bot token and target channel ID from Replit's secrets
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
 
@@ -33,7 +45,7 @@ client.once('ready', async () => {
     const partyCommand = new SlashCommandBuilder()
         .setName('party')
         .setDescription('Creates a new party for a game')
-        // No setDefaultMemberPermissions(null) here, so it defaults to visible to all
+        // We no longer need setDefaultMemberPermissions(null) since you're using integrations
         .addStringOption(option =>
             option.setName('region')
             .setDescription('The game server region')
@@ -74,14 +86,8 @@ client.once('ready', async () => {
         );
 
     // Register the command with Discord's API
-    // Use client.application.commands.set to clear existing and add new globally
-    // Or client.application.commands.create to add a new one
-    await client.application.commands.create(partyCommand); 
+    await client.application.commands.create(partyCommand);
     console.log('Slash command registered!');
-
-    // You can skip the permission setting part if you've handled it via Discord Integrations
-    // as you mentioned. If Discord Integrations automatically set it for all users,
-    // then the command will be visible to everyone.
 });
 
 // Handle slash command interactions
@@ -93,9 +99,6 @@ client.on('interactionCreate', async interaction => {
     } = interaction;
 
     if (commandName === 'party') {
-        // Role permission check is removed as per your request.
-        // The command will now be usable by anyone who can see it via Discord Integrations.
-
         const region = interaction.options.getString('region');
         const duelType = interaction.options.getString('duel_type');
         const serverCode = interaction.options.getString('server_code');
@@ -169,6 +172,7 @@ client.on('interactionCreate', async interaction => {
     if (action === 'party' && activeParties[partyId]) {
         const party = activeParties[partyId];
         const playerId = interaction.user.id;
+        const playerTag = interaction.user.tag;
 
         // Check if the user is the host
         if (party.players[0] === playerId) {
