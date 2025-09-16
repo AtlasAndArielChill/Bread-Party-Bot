@@ -34,45 +34,20 @@ app.listen(PORT, () => {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
 
-// This object tracks active parties and duels
-const activeGames = {}; // Will store both parties and duels
+// This object tracks the number of players for each party embed
+const activeParties = {};
 
-// Helper function to determine total players needed for a game type
-function getTotalPlayersForGameType(gameType) {
-    const firstChar = parseInt(gameType.charAt(0));
-    if (isNaN(firstChar)) return 0; // Should not happen with valid inputs
-    return firstChar * 2; // e.g., 2v2 needs 4 players total
-}
-
-// --- Slash Command Registration ---
+// When the bot is ready
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // --- /duel command ---
+    // Create the /duel command
     const duelCommand = new SlashCommandBuilder()
         .setName('duel')
-        .setDescription('Initiates a duel challenge')
-        .addStringOption(option =>
-            option.setName('region')
-            .setDescription('The game server region')
-            .setRequired(true)
-            .addChoices({
-                name: 'North America',
-                value: 'NA'
-            }, {
-                name: 'Asia',
-                value: 'ASIA'
-            }, {
-                name: 'Australia',
-                value: 'AU'
-            }, {
-                name: 'Europe',
-                value: 'EU'
-            })
-        )
+        .setDescription('Creates a team-based duel to find opponents')
         .addStringOption(option =>
             option.setName('duel_type')
-            .setDescription('The type of duel (e.g., 1v1, 2v2, 3v3)')
+            .setDescription('The duel size (e.g., 1v1, 2v2)')
             .setRequired(true)
             .addChoices({
                 name: '1v1',
@@ -86,14 +61,48 @@ client.once('ready', async () => {
             })
         )
         .addStringOption(option =>
+            option.setName('region')
+            .setDescription('The game server region')
+            .setRequired(true)
+            .addChoices({
+                name: 'North America',
+                value: 'NA'
+            }, {
+                name: 'Asia',
+                value: 'ASIA'
+            }, {
+                name: 'Australia',
+                value: 'AU'
+            }, {
+                name: 'Europe',
+                value: 'EU'
+            })
+        )
+        .addStringOption(option =>
             option.setName('server_code')
             .setDescription('The private server code from the Roblox link')
-            .setRequired(true));
+            .setRequired(true)
+        );
 
-    // --- /party command ---
+    // Create the /party command
     const partyCommand = new SlashCommandBuilder()
         .setName('party')
-        .setDescription('Forms a party to queue for a game')
+        .setDescription('Creates a party to find teammates for your side')
+        .addStringOption(option =>
+            option.setName('party_type')
+            .setDescription('The party size for your team (e.g., 2v2, 3v3)')
+            .setRequired(true)
+            .addChoices({
+                name: '2v2',
+                value: '2v2'
+            }, {
+                name: '3v3',
+                value: '3v3'
+            }, {
+                name: '4v4',
+                value: '4v4'
+            })
+        )
         .addStringOption(option =>
             option.setName('region')
             .setDescription('The game server region')
@@ -113,32 +122,18 @@ client.once('ready', async () => {
             })
         )
         .addStringOption(option =>
-            option.setName('party_type') // Changed name to avoid confusion with duel_type
-            .setDescription('The type of party (e.g., 2v2, 3v3, 4v4)')
-            .setRequired(true)
-            .addChoices({
-                name: '2v2',
-                value: '2v2'
-            }, {
-                name: '3v3',
-                value: '3v3'
-            }, {
-                name: '4v4',
-                value: '4v4'
-            })
-        )
-        .addStringOption(option =>
             option.setName('server_code')
             .setDescription('The private server code from the Roblox link')
-            .setRequired(true));
+            .setRequired(true)
+        );
 
-    // Register commands
+    // Register both commands with Discord's API
     await client.application.commands.create(duelCommand);
     await client.application.commands.create(partyCommand);
     console.log('Slash commands registered!');
 });
 
-// --- Command Interaction Handler ---
+// Handle slash command interactions
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
@@ -146,269 +141,180 @@ client.on('interactionCreate', async interaction => {
         commandName
     } = interaction;
 
-    // --- Handling /duel command ---
+    let type, region, serverCode, playersNeeded, totalPlayersNeeded, title, description;
+    const host = interaction.user;
+
     if (commandName === 'duel') {
-        const region = interaction.options.getString('region');
-        const duelType = interaction.options.getString('duel_type');
-        const serverCode = interaction.options.getString('server_code');
-        const host = interaction.user;
+        type = interaction.options.getString('duel_type');
+        region = interaction.options.getString('region');
+        serverCode = interaction.options.getString('server_code');
+        playersNeeded = parseInt(type.charAt(0)) * 2 - 1;
+        totalPlayersNeeded = parseInt(type.charAt(0)) * 2;
+        title = `A new ${type} duel has been created!`;
+        description = `A duel has been started by **${host.tag}**! Click the button below to join the game.`;
 
-        const totalPlayersNeeded = getTotalPlayersForGameType(duelType);
-        // For duels, the host initiates, and players join.
-        // The number of players needed to join is totalPlayersNeeded - 1 (host)
-        const playersToJoin = totalPlayersNeeded - 1; 
-        
-        const gameId = `duel-${host.id}-${Date.now()}`;
-        activeGames[gameId] = {
-            type: 'duel',
-            host: host.tag,
-            players: [host.id], // Host is the first player
-            playersToJoin: playersToJoin,
-            duelType: duelType,
-            region: region,
-            serverCode: serverCode
-        };
-
-        const embed = {
-            color: 0x0099ff,
-            title: `A new ${duelType} duel challenge!`,
-            description: `**${host.tag}** is challenging for a ${duelType} duel. Click the button to join the duel!`,
-            fields: [{
-                name: 'Region',
-                value: region,
-                inline: true
-            }, {
-                name: 'Duel Type',
-                value: duelType,
-                inline: true
-            }, {
-                name: 'Players Needed',
-                value: `${playersToJoin} more player(s)`,
-                inline: true
-            }, ],
-            timestamp: new Date(),
-        };
-
-        const joinButton = new ButtonBuilder()
-            .setCustomId(`join_game_${gameId}`)
-            .setLabel(`Join Duel (${activeGames[gameId].players.length}/${totalPlayersNeeded})`)
-            .setStyle(ButtonStyle.Success);
-
-        const actionRow = new ActionRowBuilder().addComponents(joinButton);
-
-        const channel = interaction.guild.channels.cache.get(TARGET_CHANNEL_ID);
-        if (channel) {
-            await channel.send({
-                embeds: [embed],
-                components: [actionRow]
-            });
-            interaction.reply({
-                content: 'Duel challenge initiated!',
-                ephemeral: true
-            });
-        } else {
-            interaction.reply({
-                content: 'Target channel not found. Please ensure the TARGET_CHANNEL_ID secret is correct.',
-                ephemeral: true
-            });
-        }
+    } else if (commandName === 'party') {
+        type = interaction.options.getString('party_type');
+        region = interaction.options.getString('region');
+        serverCode = interaction.options.getString('server_code');
+        playersNeeded = parseInt(type.charAt(0)) - 1;
+        totalPlayersNeeded = parseInt(type.charAt(0));
+        title = `A new ${type} party has been created!`;
+        description = `A party has been started by **${host.tag}**! Click the button below to join the team.`;
     }
 
-    // --- Handling /party command ---
-    if (commandName === 'party') {
-        const region = interaction.options.getString('region');
-        const partyType = interaction.options.getString('party_type'); // Use party_type
-        const serverCode = interaction.options.getString('server_code');
-        const host = interaction.user;
+    const partyId = `${host.id}-${Date.now()}`;
+    activeParties[partyId] = {
+        players: [host.id],
+        playersNeeded: playersNeeded,
+        type: type,
+        region: region,
+        host: host.tag,
+        serverCode: serverCode,
+        totalPlayers: totalPlayersNeeded
+    };
 
-        const totalPlayersNeeded = getTotalPlayersForGameType(partyType);
-        // For parties, host is 1 player, and we need (totalPlayersNeeded - 1) more.
-        const playersToJoin = totalPlayersNeeded - 1; 
-        
-        const gameId = `party-${host.id}-${Date.now()}`;
-        activeGames[gameId] = {
-            type: 'party',
-            host: host.tag,
-            players: [host.id], // Host is the first player
-            playersToJoin: playersToJoin,
-            partyType: partyType,
-            region: region,
-            serverCode: serverCode
-        };
+    const embed = {
+        color: 0x0099ff,
+        title: title,
+        description: description,
+        fields: [{
+            name: 'Region',
+            value: region,
+            inline: true
+        }, {
+            name: 'Type',
+            value: type,
+            inline: true
+        }, {
+            name: 'Players Needed',
+            value: `${playersNeeded} more player(s)`,
+            inline: true
+        }, ],
+        timestamp: new Date(),
+    };
 
-        const embed = {
-            color: 0x3498db, // Different color for parties
-            title: `A new ${partyType} party formed!`,
-            description: `**${host.tag}** is forming a party for a ${partyType} game. Click the button to join the party!`,
-            fields: [{
-                name: 'Region',
-                value: region,
-                inline: true
-            }, {
-                name: 'Party Type',
-                value: partyType,
-                inline: true
-            }, {
-                name: 'Players Needed',
-                value: `${playersToJoin} more player(s)`,
-                inline: true
-            }, ],
-            timestamp: new Date(),
-        };
+    const joinButton = new ButtonBuilder()
+        .setCustomId(`join_${commandName}_${partyId}`)
+        .setLabel(`Join (${activeParties[partyId].players.length}/${totalPlayersNeeded})`)
+        .setStyle(ButtonStyle.Success);
 
-        const joinButton = new ButtonBuilder()
-            .setCustomId(`join_game_${gameId}`)
-            .setLabel(`Join Party (${activeGames[gameId].players.length}/${totalPlayersNeeded})`)
-            .setStyle(ButtonStyle.Primary); // Different style for party buttons
+    const actionRow = new ActionRowBuilder().addComponents(joinButton);
 
-        const actionRow = new ActionRowBuilder().addComponents(joinButton);
-
-        const channel = interaction.guild.channels.cache.get(TARGET_CHANNEL_ID);
-        if (channel) {
-            await channel.send({
-                embeds: [embed],
-                components: [actionRow]
-            });
-            interaction.reply({
-                content: 'Party formed and announced!',
-                ephemeral: true
-            });
-        } else {
-            interaction.reply({
-                content: 'Target channel not found. Please ensure the TARGET_CHANNEL_ID secret is correct.',
-                ephemeral: true
-            });
-        }
+    const channel = interaction.guild.channels.cache.get(TARGET_CHANNEL_ID);
+    if (channel) {
+        await channel.send({
+            embeds: [embed],
+            components: [actionRow]
+        });
+        interaction.reply({
+            content: `${commandName.charAt(0).toUpperCase() + commandName.slice(1)} successfully created!`,
+            ephemeral: true
+        });
+    } else {
+        interaction.reply({
+            content: 'Target channel not found. Please check your TARGET_CHANNEL_ID secret.',
+            ephemeral: true
+        });
     }
 });
 
-// --- Button Interaction Handler ---
+// Handle button interactions
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    const customId = interaction.customId;
+    const [action, commandType, partyId] = interaction.customId.split('_');
 
-    if (customId.startsWith('join_game_')) {
-        const parts = customId.split('_');
-        const gameType = parts[1]; // 'duel' or 'party'
-        const gameId = parts.slice(2).join('_'); // Reconstruct the game ID
+    if (action === 'join' && (commandType === 'duel' || commandType === 'party') && activeParties[partyId]) {
+        const party = activeParties[partyId];
+        const playerId = interaction.user.id;
 
-        if (activeGames[gameId]) {
-            const game = activeGames[gameId];
-            const playerId = interaction.user.id;
-            const playerTag = interaction.user.tag;
+        // Check if the user has already joined
+        if (party.players.includes(playerId)) {
+            return interaction.reply({
+                content: 'You have already joined this party.',
+                ephemeral: true
+            });
+        }
 
-            // Check if the player is the host (already "joined")
-            if (game.players[0] === playerId) {
-                return interaction.reply({
-                    content: `You are the ${game.type} host and have already joined.`,
-                    ephemeral: true
-                });
-            }
+        // Check if the party is full
+        if (party.playersNeeded <= 0) {
+            return interaction.reply({
+                content: 'This party is already full.',
+                ephemeral: true
+            });
+        }
 
-            // Check if the player has already joined
-            if (game.players.includes(playerId)) {
-                return interaction.reply({
-                    content: `You have already joined this ${game.type}.`,
-                    ephemeral: true
-                });
-            }
+        party.players.push(playerId);
+        party.playersNeeded--;
 
-            // Check if the game/party is already full
-            if (game.playersNeeded <= 0) {
-                return interaction.reply({
-                    content: `This ${game.type} is already full.`,
-                    ephemeral: true
-                });
-            }
+        const playersInParty = party.players.length;
+        const updatedButton = new ButtonBuilder()
+            .setCustomId(`join_${commandType}_${partyId}`)
+            .setLabel(`Join (${playersInParty}/${party.totalPlayers})`)
+            .setStyle(ButtonStyle.Success);
 
-            // Add player to the game/party
-            game.players.push(playerId);
-            game.playersNeeded--;
+        const updatedRow = new ActionRowBuilder().addComponents(updatedButton);
 
-            const playersInGame = game.players.length;
-            const totalPlayersNeeded = getTotalPlayersForGameType(gameType === 'duel' ? game.duelType : game.partyType);
-
-            // Determine button style and label based on game type
-            const buttonStyle = game.type === 'duel' ? ButtonStyle.Success : ButtonStyle.Primary;
-            const buttonLabel = `Join ${game.type.charAt(0).toUpperCase() + game.type.slice(1)} (${playersInGame}/${totalPlayersNeeded})`;
-
-            const updatedButton = new ButtonBuilder()
-                .setCustomId(customId) // Keep the same custom ID
-                .setLabel(buttonLabel)
-                .setStyle(buttonStyle);
-
-            const updatedRow = new ActionRowBuilder().addComponents(updatedButton);
-
-            // Update embed description and player count field
-            const updatedEmbedFields = [{
+        const updatedEmbed = {
+            color: 0x0099ff,
+            title: `A new ${party.type} ${commandType} has been created!`,
+            description: `A ${commandType} has been started by **${party.host}**! Click the button below to join.`,
+            fields: [{
                 name: 'Region',
-                value: game.region,
+                value: party.region,
                 inline: true
             }, {
-                name: game.type === 'duel' ? 'Duel Type' : 'Party Type',
-                value: game.type === 'duel' ? game.duelType : game.partyType,
+                name: 'Type',
+                value: party.type,
                 inline: true
             }, {
                 name: 'Players Needed',
-                value: `${game.playersNeeded} more player(s)`,
+                value: `${party.playersNeeded} more player(s)`,
                 inline: true
-            }, ];
+            }, ],
+            timestamp: new Date(),
+        };
 
-            const updatedEmbed = {
-                color: game.type === 'duel' ? 0x0099ff : 0x3498db,
-                title: `A new ${game.type === 'duel' ? game.duelType : game.partyType} ${game.type} ${game.type === 'duel' ? 'challenge!' : 'formed!'}`,
-                description: `**${game.host}** is initiating a ${game.type === 'duel' ? game.duelType + ' duel' : game.partyType + ' party'}. Click the button to join!`,
-                fields: updatedEmbedFields,
+        // Update the original message
+        await interaction.update({
+            embeds: [updatedEmbed],
+            components: [updatedRow]
+        });
+
+        // Notify the user via DM and ephemeral message
+        await interaction.followUp({
+            content: `You have successfully joined the ${commandType}!`,
+            ephemeral: true
+        });
+
+        const joinUrl = `https://www.roblox.com/share?code=${party.serverCode}&type=Server`;
+        await interaction.user.send(`Here's your private server link for the **${party.type}** ${commandType} hosted by **${party.host}**: ${joinUrl}`);
+
+        // If the party is full, delete the embed and send a final message
+        if (party.playersNeeded <= 0) {
+            const fullEmbed = {
+                color: 0x00ff00,
+                title: `${commandType.charAt(0).toUpperCase() + commandType.slice(1)} is Full!`,
+                description: `The **${party.type}** ${commandType} hosted by **${party.host}** is now full! Join the game using the link below.`,
+                url: joinUrl,
+                fields: [{
+                    name: 'Region',
+                    value: party.region,
+                    inline: true
+                }, {
+                    name: 'Type',
+                    value: party.type,
+                    inline: true
+                }, ],
                 timestamp: new Date(),
             };
 
-            // Update the original message
-            await interaction.update({
-                embeds: [updatedEmbed],
-                components: [updatedRow]
+            await interaction.message.delete();
+            await interaction.channel.send({
+                embeds: [fullEmbed]
             });
-
-            // Notify the user they have joined and send them the link
-            await interaction.followUp({
-                content: `You have successfully joined the ${game.type}!`,
-                ephemeral: true
-            });
-
-            const joinUrl = `https://www.roblox.com/share?code=${game.serverCode}&type=Server`;
-            await interaction.user.send(`Here's your ${game.type} link for the ${game.type === 'duel' ? game.duelType : game.partyType} game hosted by ${game.host}: ${joinUrl}`);
-
-            // Check if the game/party is full and delete the embed
-            if (game.playersNeeded <= 0) {
-                const finalEmbed = {
-                    color: game.type === 'duel' ? 0x00ff00 : 0x2ecc71, // Greenish for full
-                    title: `✅ ${game.type.charAt(0).toUpperCase() + game.type.slice(1)} is Full!`,
-                    description: `The ${game.type === 'duel' ? game.duelType + ' duel' : game.partyType + ' party'} hosted by **${game.host}** is now full! Use the link below to join the game.`,
-                    url: joinUrl,
-                    fields: [{
-                        name: 'Region',
-                        value: game.region,
-                        inline: true
-                    }, {
-                        name: game.type === 'duel' ? 'Duel Type' : 'Party Type',
-                        value: game.type === 'duel' ? game.duelType : game.partyType,
-                        inline: true
-                    }, ],
-                    timestamp: new Date(),
-                };
-
-                await interaction.message.delete(); // Delete the original message
-                await interaction.channel.send({
-                    embeds: [finalEmbed]
-                });
-                delete activeGames[gameId]; // Remove from active games
-            }
-        } else {
-            // Handle cases where the game/party ID is no longer valid (e.g., expired)
-            await interaction.reply({
-                content: `This ${customId.startsWith('join_duel') ? 'duel' : 'party'} is no longer active.`,
-                ephemeral: true
-            });
+            delete activeParties[partyId];
         }
     }
 });
